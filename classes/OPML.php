@@ -348,13 +348,18 @@ class OPML extends Handler_Protected {
 
 				//print "F: $title, $inverse, $enabled, $match_any_rule";
 
-				$sth = $this->pdo->prepare("INSERT INTO ttrss_filters2 (match_any_rule,enabled,inverse,title,owner_uid)
-					VALUES (?, ?, ?, ?, ?) RETURNING id");
-
-				$sth->execute([$match_any_rule, $enabled, $inverse, $title, $owner_uid]);
-
-				$row = $sth->fetch();
-				$filter_id = $row['id'];
+				if (Config::get(Config::DB_TYPE) == 'pgsql') {
+					$sth = $this->pdo->prepare("INSERT INTO ttrss_filters2 (match_any_rule,enabled,inverse,title,owner_uid)
+						VALUES (?, ?, ?, ?, ?) RETURNING id");
+					$sth->execute([$match_any_rule, $enabled, $inverse, $title, $owner_uid]);
+					$row = $sth->fetch();
+					$filter_id = $row['id'];
+				} else {
+					$sth = $this->pdo->prepare("INSERT INTO ttrss_filters2 (match_any_rule,enabled,inverse,title,owner_uid)
+						VALUES (?, ?, ?, ?, ?)");
+					$sth->execute([$match_any_rule, $enabled, $inverse, $title, $owner_uid]);
+					$filter_id = (int) $this->pdo->lastInsertId();
+				}
 
 				if ($filter_id) {
 					$this->opml_notice(T_sprintf("Adding filter %s...", $title), $nest);

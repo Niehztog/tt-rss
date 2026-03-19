@@ -89,13 +89,15 @@ class Article extends Handler_Protected {
 					content = ?, content_hash = ? WHERE id = ?");
 				$sth->execute([$content, $content_hash, $ref_id]);
 
-				$sth = $pdo->prepare("UPDATE ttrss_entries
-				SET tsvector_combined = to_tsvector( :ts_content)
-				WHERE id = :id");
-				$params = [
-					":ts_content" => mb_substr(\Soundasleep\Html2Text::convert($content), 0, 900000),
-					":id" => $ref_id];
-				$sth->execute($params);
+				if (Config::get(Config::DB_TYPE) == 'pgsql') {
+					$sth = $pdo->prepare("UPDATE ttrss_entries
+					SET tsvector_combined = to_tsvector( :ts_content)
+					WHERE id = :id");
+					$params = [
+						":ts_content" => mb_substr(\Soundasleep\Html2Text::convert($content), 0, 900000),
+						":id" => $ref_id];
+					$sth->execute($params);
+				}
 
 				$sth = $pdo->prepare("UPDATE ttrss_user_entries SET published = true,
 						last_published = NOW() WHERE
@@ -125,22 +127,34 @@ class Article extends Handler_Protected {
 			$rc = true;
 
 		} else {
-			$sth = $pdo->prepare("INSERT INTO ttrss_entries
-				(title, guid, link, updated, content, content_hash, date_entered, date_updated)
-				VALUES
-				(?, ?, ?, NOW(), ?, ?, NOW(), NOW()) RETURNING id");
-			$sth->execute([$title, $guid, $url, $content, $content_hash]);
+			if (Config::get(Config::DB_TYPE) == 'pgsql') {
+				$sth = $pdo->prepare("INSERT INTO ttrss_entries
+					(title, guid, link, updated, content, content_hash, date_entered, date_updated)
+					VALUES
+					(?, ?, ?, NOW(), ?, ?, NOW(), NOW()) RETURNING id");
+				$sth->execute([$title, $guid, $url, $content, $content_hash]);
+				$row = $sth->fetch();
+			} else {
+				$sth = $pdo->prepare("INSERT INTO ttrss_entries
+					(title, guid, link, updated, content, content_hash, date_entered, date_updated)
+					VALUES
+					(?, ?, ?, NOW(), ?, ?, NOW(), NOW())");
+				$sth->execute([$title, $guid, $url, $content, $content_hash]);
+				$row = ['id' => $pdo->lastInsertId()];
+			}
 
-			if ($row = $sth->fetch()) {
+			if ($row) {
 				$ref_id = $row["id"];
 
-				$sth = $pdo->prepare("UPDATE ttrss_entries
-					SET tsvector_combined = to_tsvector( :ts_content)
-					WHERE id = :id");
-				$params = [
-					":ts_content" => mb_substr(\Soundasleep\Html2Text::convert($content), 0, 900000),
-					":id" => $ref_id];
-				$sth->execute($params);
+				if (Config::get(Config::DB_TYPE) == 'pgsql') {
+					$sth = $pdo->prepare("UPDATE ttrss_entries
+						SET tsvector_combined = to_tsvector( :ts_content)
+						WHERE id = :id");
+					$params = [
+						":ts_content" => mb_substr(\Soundasleep\Html2Text::convert($content), 0, 900000),
+						":id" => $ref_id];
+					$sth->execute($params);
+				}
 
 				$sth = $pdo->prepare("INSERT INTO ttrss_user_entries
 					(ref_id, uuid, feed_id, orig_feed_id, owner_uid, published, tag_cache, label_cache,

@@ -205,6 +205,12 @@ class Feeds extends Handler_Protected {
 
 				++$headlines_count;
 
+				if (Config::get(Config::DB_TYPE) == 'mysql') {
+					foreach (["unread", "marked", "published"] as $k) {
+						$line[$k] = is_integer($line[$k]) ? $line[$k] === 1 : $line[$k] === "1";
+					}
+				}
+
 				if (!Prefs::get(Prefs::SHOW_CONTENT_PREVIEW, $_SESSION['uid'], $profile)) {
 					$line["content_preview"] = "";
 				} else {
@@ -557,7 +563,7 @@ class Feeds extends Handler_Protected {
 
 	function search(): void {
 		print json_encode([
-			"show_language" => true,
+			"show_language" => Config::get(Config::DB_TYPE) == "pgsql",
 			"show_syntax_help" => count(PluginHost::getInstance()->get_hooks(PluginHost::HOOK_SEARCH)) == 0,
 			"all_languages" => Pref_Feeds::get_ts_languages(),
 			"default_language" => Prefs::get(Prefs::DEFAULT_SEARCH_LANGUAGE, $_SESSION['uid'], $_SESSION['profile'] ?? null)
@@ -741,7 +747,7 @@ class Feeds extends Handler_Protected {
 		}
 
 		$date_qpart = match ($mode) {
-			'1day', '1week', '2week' => "date_entered < NOW() - INTERVAL '" . (int) substr($mode, 0, 1) . " " . substr($mode, 1) . "'",
+			'1day', '1week', '2week' => Db::past_comparison_qpart('date_entered', '<', (int) substr($mode, 0, 1), substr($mode, 1)),
 			default => 'true',
 		};
 
@@ -815,7 +821,7 @@ class Feeds extends Handler_Protected {
 						SET unread = false, last_read = NOW() WHERE ref_id IN
 							(SELECT id FROM
 								(SELECT DISTINCT id FROM ttrss_entries, ttrss_user_entries WHERE ref_id = id
-									AND owner_uid = ? AND score >= 0 AND unread = true AND date_entered > NOW() - INTERVAL '$intl hour'
+									AND owner_uid = ? AND score >= 0 AND unread = true AND " . Db::past_comparison_qpart('date_entered', '>', (int)$intl, 'hour') . "
 									AND $date_qpart AND $search_qpart) as tmp)");
 					$sth->execute([$owner_uid]);
 				}
@@ -898,7 +904,7 @@ class Feeds extends Handler_Protected {
 			$match_part = "published = true";
 		} else if ($n_feed == Feeds::FEED_FRESH) {
 			$intl = (int) Prefs::get(Prefs::FRESH_ARTICLE_MAX_AGE, $owner_uid, $profile);
-			$match_part = "unread = true AND score >= 0 AND date_entered > NOW() - INTERVAL '$intl hour'";
+			$match_part = "unread = true AND score >= 0 AND " . Db::past_comparison_qpart('date_entered', '>', (int)$intl, 'hour');
 
 			$need_entries = true;
 
@@ -1521,8 +1527,7 @@ class Feeds extends Handler_Protected {
 		} else if ($feed == Feeds::FEED_RECENTLY_READ) { // recently read
 			$intl = (int) Prefs::get(Prefs::RECENTLY_READ_MAX_AGE, $owner_uid, $profile);
 
-			$query_strategy_part = "unread = false AND last_read IS NOT NULL AND
-				last_read > NOW() - INTERVAL '$intl hour'";
+			$query_strategy_part = "unread = false AND last_read IS NOT NULL AND " . Db::past_comparison_qpart('last_read', '>', (int)$intl, 'hour') . " ";
 
 			$vfeed_query_part = "ttrss_feeds.title AS feed_title,";
 			$allow_archived = true;
@@ -1533,8 +1538,7 @@ class Feeds extends Handler_Protected {
 		} else if ($feed == Feeds::FEED_FRESH) { // fresh virtual feed
 			$intl = (int) Prefs::get(Prefs::FRESH_ARTICLE_MAX_AGE, $owner_uid, $profile);
 
-			$query_strategy_part = "unread = true AND score >= 0 AND
-				date_entered > NOW() - INTERVAL '$intl hour'";
+			$query_strategy_part = "unread = true AND score >= 0 AND " . Db::past_comparison_qpart('date_entered', '>', (int)$intl, 'hour') . " ";
 
 			$vfeed_query_part = "ttrss_feeds.title AS feed_title,";
 		} else if ($feed == Feeds::FEED_ALL) { // all articles virtual feed
@@ -1608,7 +1612,11 @@ class Feeds extends Handler_Protected {
 
 		$first_id = 0;
 
-		$yyiw_qpart = "to_char(date_entered, 'IYYY-IW') AS yyiw";
+		if (Config::get(Config::DB_TYPE) == 'mysql') {
+			$yyiw_qpart = "DATE_FORMAT(date_entered, '%x-%v') AS yyiw";
+		} else {
+			$yyiw_qpart = "to_char(date_entered, 'IYYY-IW') AS yyiw";
+		}
 
 		if (is_numeric($feed)) {
 			// proper override_order applied above
@@ -1643,7 +1651,7 @@ class Feeds extends Handler_Protected {
 				$first_id_query_strategy_part = "true";
 
 			$distinct_columns = str_replace("desc", "", strtolower($order_by));
-			$distinct_qpart = "DISTINCT ON (id, $distinct_columns)";
+			$distinct_qpart = Config::get(Config::DB_TYPE) == "mysql" ? "DISTINCT" : "DISTINCT ON (id, $distinct_columns)";
 
 			// except for Labels category
 			if (Prefs::get(Prefs::HEADLINES_NO_DISTINCT, $owner_uid, $profile)
@@ -1675,7 +1683,7 @@ class Feeds extends Handler_Protected {
 						$search_query_part
 						$start_ts_query_part
 						$since_id_part
-						date_entered >= NOW() - INTERVAL '1 hour' AND
+						" . Db::past_comparison_qpart('date_entered', '>=', 1, 'hour') . " AND
 						$first_id_query_strategy_part ORDER BY $order_by LIMIT 1";
 
 				if (!empty($_REQUEST["debug"])) {
@@ -1745,7 +1753,7 @@ class Feeds extends Handler_Protected {
 				$distinct_qpart = "";
 			} else {
 				$distinct_columns = str_replace("desc", "", strtolower($order_by));
-				$distinct_qpart = "DISTINCT ON (id, $distinct_columns)";
+				$distinct_qpart = Config::get(Config::DB_TYPE) == "mysql" ? "DISTINCT" : "DISTINCT ON (id, $distinct_columns)";
 			}
 
 			$query = "SELECT $distinct_qpart
@@ -2034,13 +2042,23 @@ class Feeds extends Handler_Protected {
 
 			$query_limit = $purge_unread ? '' : ' unread = false AND ';
 
-			$sth = $pdo->prepare("DELETE FROM ttrss_user_entries
-				USING ttrss_entries
-				WHERE ttrss_entries.id = ref_id AND
-				marked = false AND
-				feed_id = ? AND
-				$query_limit
-				ttrss_entries.date_updated < NOW() - INTERVAL '$purge_interval days'");
+			if (Config::get(Config::DB_TYPE) == 'pgsql') {
+				$sth = $pdo->prepare("DELETE FROM ttrss_user_entries
+					USING ttrss_entries
+					WHERE ttrss_entries.id = ref_id AND
+					marked = false AND
+					feed_id = ? AND
+					$query_limit
+					" . Db::past_comparison_qpart('ttrss_entries.date_updated', '<', (int)$purge_interval, 'day') . "");
+			} else {
+				$sth = $pdo->prepare("DELETE ttrss_user_entries FROM ttrss_user_entries
+					INNER JOIN ttrss_entries ON ttrss_entries.id = ref_id
+					WHERE
+					marked = false AND
+					feed_id = ? AND
+					$query_limit
+					ttrss_entries.date_updated < DATE_SUB(NOW(), INTERVAL $purge_interval DAY)");
+			}
 			$sth->execute([$feed_id]);
 
 			$rows_deleted = $sth->rowCount();
@@ -2333,9 +2351,14 @@ class Feeds extends Handler_Protected {
 				$tsquery = $pdo->quote(implode(' & ', $search_query_leftover));
 			}
 
-			$search_language = $pdo->quote(mb_strtolower($search_language ?: Prefs::get(Prefs::DEFAULT_SEARCH_LANGUAGE, $owner_uid, $profile)));
+			if (Config::get(Config::DB_TYPE) == 'pgsql') {
+				$search_language = $pdo->quote(mb_strtolower($search_language ?: Prefs::get(Prefs::DEFAULT_SEARCH_LANGUAGE, $owner_uid, $profile)));
 
-			$query_keywords[] = "(tsvector_combined @@ to_tsquery($search_language, $tsquery))";
+				$query_keywords[] = "(tsvector_combined @@ to_tsquery($search_language, $tsquery))";
+			} else {
+				$ft_query = $pdo->quote(implode(" ", $search_query_leftover));
+				$query_keywords[] = "(MATCH (ttrss_entries.title, ttrss_entries.content) AGAINST ($ft_query IN BOOLEAN MODE))";
+			}
 		}
 
 		$search_query_part = count($query_keywords) > 0 ? implode(' AND ', $query_keywords) : 'false';

@@ -1,3 +1,6 @@
+> [!CAUTION]
+> **This is an unofficial fork of tt-rss that restores MySQL/MariaDB support** (removed upstream in April 2025) and brings back the direct feed update endpoint (`/public.php?op=globalUpdateFeeds&daemon=1`) that was removed along with `SIMPLE_UPDATE_MODE`. It is not supported by the upstream project. Use at your own risk.
+
 Tiny Tiny RSS (tt-rss)
 ======================
 

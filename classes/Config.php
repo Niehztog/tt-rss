@@ -24,11 +24,11 @@ class Config {
 	 *
 	*/
 
-	/** this is kept for backwards/plugin compatibility, the only supported database is PostgreSQL
-	 *
-	 * @deprecated usages of `Config::get(Config::DB_TYPE)` should be replaced with default (and only) value: `pgsql` or removed
-	*/
+	/** database type: pgsql or mysql */
 	const DB_TYPE = "DB_TYPE";
+
+	/** MySQL charset (used when DB_TYPE=mysql) */
+	const MYSQL_CHARSET = "MYSQL_CHARSET";
 
 	/** database server hostname */
 	const DB_HOST = "DB_HOST";
@@ -246,6 +246,7 @@ class Config {
 	/** default values for all global configuration options */
 	private const _DEFAULTS = [
 		Config::DB_TYPE => [ "pgsql", 									Config::T_STRING ],
+		Config::MYSQL_CHARSET => [ "utf8mb4",							Config::T_STRING ],
 		Config::DB_HOST => [ "db", 										Config::T_STRING ],
 		Config::DB_USER => [ "",											Config::T_STRING ],
 		Config::DB_NAME => [ "", 											Config::T_STRING ],

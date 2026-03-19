@@ -13,6 +13,9 @@ class Pref_Feeds extends Handler_Protected {
 	 * @return array<int, string>
 	 */
 	public static function get_ts_languages(): array {
+		if (Config::get(Config::DB_TYPE) != 'pgsql') {
+			return [];
+		}
 		return array_map(ucfirst(...),
 			array_column(ORM::for_table('pg_ts_config')->select('cfgname')->find_array(), 'cfgname'));
 	}
@@ -1120,7 +1123,7 @@ class Pref_Feeds extends Handler_Protected {
 				"(SELECT MAX(ttrss_entries.updated)
 				FROM ttrss_entries
 				JOIN ttrss_user_entries ON ttrss_entries.id = ttrss_user_entries.ref_id
-				WHERE ttrss_user_entries.feed_id = f.id) < NOW() - INTERVAL '3 months'")
+				WHERE ttrss_user_entries.feed_id = f.id) " . (Config::get(Config::DB_TYPE) == 'mysql' ? '< DATE_SUB(NOW(), INTERVAL 3 MONTH)' : "< NOW() - INTERVAL '3 months'") . "")
 			->group_by('f.title')
 			->group_by('f.id')
 			->group_by('f.site_url')

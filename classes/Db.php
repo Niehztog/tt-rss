@@ -9,6 +9,10 @@ class Db {
 		ORM::configure('username', Config::get(Config::DB_USER));
 		ORM::configure('password', Config::get(Config::DB_PASS));
 		ORM::configure('return_result_sets', true);
+
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			ORM::configure('driver_options', [PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES " . Config::get(Config::MYSQL_CHARSET)]);
+		}
 	}
 
 	/**
@@ -26,10 +30,16 @@ class Db {
 	public static function get_dsn(): string {
 		$db_port = Config::get(Config::DB_PORT) ? ';port=' . Config::get(Config::DB_PORT) : '';
 		$db_host = Config::get(Config::DB_HOST) ? ';host=' . Config::get(Config::DB_HOST) : '';
-		$db_sslmode = Config::get(Config::DB_SSLMODE);
 
-		return 'pgsql:dbname=' . Config::get(Config::DB_NAME) . $db_host . $db_port .
-			";sslmode=$db_sslmode";
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			return 'mysql:dbname=' . Config::get(Config::DB_NAME) . $db_host . $db_port .
+				';charset=' . Config::get(Config::MYSQL_CHARSET);
+		} else {
+			$db_sslmode = Config::get(Config::DB_SSLMODE);
+
+			return 'pgsql:dbname=' . Config::get(Config::DB_NAME) . $db_host . $db_port .
+				";sslmode=$db_sslmode";
+		}
 	}
 
 	// this really shouldn't be used unless a separate PDO connection is needed
@@ -47,10 +57,15 @@ class Db {
 
 		$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-		$pdo->query("set client_encoding = 'UTF-8'");
-		$pdo->query("set datestyle = 'ISO, european'");
-		$pdo->query("set TIME ZONE 0");
-		$pdo->query("set cpu_tuple_cost = 0.5");
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			$pdo->query("SET time_zone = '+0:0'");
+			$pdo->query("SET NAMES " . Config::get(Config::MYSQL_CHARSET));
+		} else {
+			$pdo->query("set client_encoding = 'UTF-8'");
+			$pdo->query("set datestyle = 'ISO, european'");
+			$pdo->query("set TIME ZONE 0");
+			$pdo->query("set cpu_tuple_cost = 0.5");
+		}
 
 		return $pdo;
 	}
@@ -73,8 +88,28 @@ class Db {
 		return self::$instance->pdo;
 	}
 
-	/** @deprecated usages should be replaced with `RANDOM()` */
 	public static function sql_random_function(): string {
-		return "RANDOM()";
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			return "RAND()";
+		} else {
+			return "RANDOM()";
+		}
+	}
+
+	/**
+	 * Generate a SQL WHERE clause fragment for comparing a timestamp column to a past point in time.
+	 *
+	 * @param string $col   column name
+	 * @param string $op    comparison operator (e.g. '<', '>=')
+	 * @param int    $q     quantity
+	 * @param string $u     unit (e.g. 'day', 'hour', 'minute', 'week')
+	 * @return string
+	 */
+	public static function past_comparison_qpart(string $col, string $op, int $q, string $u): string {
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			return "$col $op DATE_SUB(NOW(), INTERVAL $q $u)";
+		} else {
+			return "$col $op NOW() - INTERVAL '$q $u'";
+		}
 	}
 }

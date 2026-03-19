@@ -23,7 +23,8 @@ class Db_Migrations {
 	}
 
 	function initialize(string $root_path, string $migrations_table, bool $base_is_latest = true, int $max_version_override = 0): void {
-		$this->base_path = "$root_path/pgsql";
+		$db_type = Config::get(Config::DB_TYPE);
+		$this->base_path = "$root_path/$db_type";
 		$this->migrations_path = $this->base_path . "/migrations";
 		$this->migrations_table = $migrations_table;
 		$this->base_is_latest = $base_is_latest;
@@ -105,7 +106,8 @@ class Db_Migrations {
 				else
 					$this->set_version($version);
 
-				$this->pdo->commit();
+				if ($this->pdo->inTransaction())
+					$this->pdo->commit();
 
 				Debug::log("Migration finished, current version: " . $this->get_version(), Debug::LOG_VERBOSE);
 

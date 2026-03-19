@@ -35,6 +35,10 @@ class Af_Psql_Trgm extends Plugin {
 	}
 
 	function init($host) {
+		if (Config::get(Config::DB_TYPE) != 'pgsql') {
+			return;
+		}
+
 		$this->host = $host;
 
 		$host->add_hook($host::HOOK_ARTICLE_FILTER, $this);

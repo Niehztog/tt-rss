@@ -702,14 +702,22 @@ class Pref_Filters extends Handler_Protected {
 
 		/* create base filter */
 
-		$sth = $this->pdo->prepare("INSERT INTO ttrss_filters2
-			(owner_uid, match_any_rule, enabled, title, inverse) VALUES
-			(?, ?, ?, ?, ?) RETURNING id");
-
-		$sth->execute([$_SESSION['uid'], $match_any_rule, $enabled, $title, $inverse]);
-
-		if ($row = $sth->fetch()) {
+		if (Config::get(Config::DB_TYPE) == 'pgsql') {
+			$sth = $this->pdo->prepare("INSERT INTO ttrss_filters2
+				(owner_uid, match_any_rule, enabled, title, inverse) VALUES
+				(?, ?, ?, ?, ?) RETURNING id");
+			$sth->execute([$_SESSION['uid'], $match_any_rule, $enabled, $title, $inverse]);
+			$row = $sth->fetch();
 			$filter_id = $row['id'];
+		} else {
+			$sth = $this->pdo->prepare("INSERT INTO ttrss_filters2
+				(owner_uid, match_any_rule, enabled, title, inverse) VALUES
+				(?, ?, ?, ?, ?)");
+			$sth->execute([$_SESSION['uid'], $match_any_rule, $enabled, $title, $inverse]);
+			$filter_id = (int) $this->pdo->lastInsertId();
+		}
+
+		if ($filter_id) {
 
 			if ($src_filter_id === null)
 				$this->_save_rules_and_actions($filter_id);

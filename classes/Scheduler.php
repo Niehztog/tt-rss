@@ -154,7 +154,7 @@ class Scheduler {
 
 		$result = ORM::for_table('ttrss_scheduled_tasks')
 			->where_not_in('task_name', array_keys($this->scheduled_tasks))
-			->where_raw("last_run < NOW() - INTERVAL '5 weeks'")
+			->where_raw(Db::past_comparison_qpart('last_run', '<', 5, 'week'))
 			->delete_many();
 
 		if ($result) {

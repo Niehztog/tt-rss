@@ -18,7 +18,7 @@ RUN [ ! -z ${ALPINE_MIRROR} ] && \
 	apk add --no-cache ca-certificates dcron git postgresql-client rsync sudo tzdata \
 		php${PHP_SUFFIX} \
 		$(for p in ctype curl dom exif fileinfo fpm gd iconv intl json mbstring \
-			openssl pcntl pdo pdo_pgsql pecl-apcu pecl-xdebug phar posix session simplexml sockets sodium tokenizer xml xmlwriter zip; do \
+			openssl pcntl pdo pdo_mysql pdo_pgsql pecl-apcu pecl-xdebug phar posix session simplexml sockets sodium tokenizer xml xmlwriter zip; do \
 			php_pkgs="$php_pkgs php${PHP_SUFFIX}-$p"; \
 		done; \
 		echo $php_pkgs) && \

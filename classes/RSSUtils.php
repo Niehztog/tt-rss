@@ -17,6 +17,13 @@ class RSSUtils {
 	/**
 	 * @param array<string, mixed> $article
 	 */
+	static function strip_utf8mb4(string $s): string {
+		if (Config::get(Config::DB_TYPE) == 'mysql' && Config::get(Config::MYSQL_CHARSET) != 'utf8mb4') {
+			return preg_replace('/[\x{10000}-\x{10FFFF}]/u', "\xEF\xBF\xBD", $s);
+		}
+		return $s;
+	}
+
 	static function calculate_article_hash(array $article, PluginHost $pluginhost): string {
 		$ignored_fields = [
 			// Details about the parent feed aren't relevant.
@@ -117,25 +124,41 @@ class RSSUtils {
 		}
 
 		if (!Config::get(Config::SINGLE_USER_MODE) && Config::get(Config::DAEMON_UPDATE_LOGIN_LIMIT) > 0) {
-			$login_thresh_qpart = "AND last_login >= NOW() - INTERVAL '" . Config::get(Config::DAEMON_UPDATE_LOGIN_LIMIT) . " day'";
+			$login_limit = Config::get(Config::DAEMON_UPDATE_LOGIN_LIMIT);
+			$login_thresh_qpart = "AND " . Db::past_comparison_qpart('last_login', '>=', (int)$login_limit, 'day');
 		} else {
 			$login_thresh_qpart = "";
 		}
 
 		$default_interval = (int) Prefs::get_default(Prefs::DEFAULT_UPDATE_INTERVAL);
 
-		$update_limit_qpart = "AND ((
-				update_interval = 0
-					AND (p.value IS NULL OR p.value != '-1')
-					AND last_updated < NOW() - CAST((COALESCE(p.value, '$default_interval') || ' minutes') AS INTERVAL)
-			) OR (
-				update_interval > 0
-				AND last_updated < NOW() - CAST((update_interval || ' minutes') AS INTERVAL)
-			) OR (
-				update_interval >= 0
-					AND (p.value IS NULL OR p.value != '-1')
-					AND (last_updated = '1970-01-01 00:00:00' OR last_updated IS NULL)
-			))";
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			$update_limit_qpart = "AND ((
+					update_interval = 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND last_updated < DATE_SUB(NOW(), INTERVAL CONVERT(COALESCE(p.value, '$default_interval'), SIGNED INTEGER) MINUTE)
+				) OR (
+					update_interval > 0
+					AND last_updated < DATE_SUB(NOW(), INTERVAL update_interval MINUTE)
+				) OR (
+					update_interval >= 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND (last_updated = '1970-01-01 00:00:00' OR last_updated IS NULL)
+				))";
+		} else {
+			$update_limit_qpart = "AND ((
+					update_interval = 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND last_updated < NOW() - CAST((COALESCE(p.value, '$default_interval') || ' minutes') AS INTERVAL)
+				) OR (
+					update_interval > 0
+					AND last_updated < NOW() - CAST((update_interval || ' minutes') AS INTERVAL)
+				) OR (
+					update_interval >= 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND (last_updated = '1970-01-01 00:00:00' OR last_updated IS NULL)
+				))";
+		}
 
 		$query_limit = $limit ? sprintf("LIMIT %d", $limit) : "";
 
@@ -150,8 +173,8 @@ class RSSUtils {
 				u.access_level NOT IN (".sprintf("%d, %d", UserHelper::ACCESS_LEVEL_DISABLED, UserHelper::ACCESS_LEVEL_READONLY).")
 				$login_thresh_qpart
 				$update_limit_qpart
-				AND (last_update_started IS NULL OR last_update_started < NOW() - INTERVAL '10 minute')
-				ORDER BY last_updated NULLS FIRST $query_limit";
+				AND (last_update_started IS NULL OR " . Db::past_comparison_qpart('last_update_started', '<', 10, 'minute') . ")
+				ORDER BY " . (Config::get(Config::DB_TYPE) == 'mysql' ? 'last_updated IS NOT NULL, last_updated' : 'last_updated NULLS FIRST') . " $query_limit";
 
 		Debug::log("base feed query: $query", Debug::LOG_EXTENDED);
 
@@ -370,7 +393,7 @@ class RSSUtils {
 			->select_many_expr([
 				'last_unconditional' => 'SUBSTRING_FOR_DATE(last_unconditional, 1, 19)',
 				'favicon_needs_check' => "(favicon_is_custom IS NOT TRUE AND
-					(favicon_last_checked IS NULL OR favicon_last_checked < NOW() - INTERVAL '12 hour'))",
+					(favicon_last_checked IS NULL OR " . Db::past_comparison_qpart('favicon_last_checked', '<', 12, 'hour') . "))",
 			])
 			->find_one($feed);
 
@@ -967,10 +990,10 @@ class RSSUtils {
 				}
 
 				$entry_tags = $article["tags"];
-				$entry_title = strip_tags($article["title"]);
+				$entry_title = self::strip_utf8mb4(strip_tags($article["title"]));
 				$entry_author = mb_substr(strip_tags($article["author"]), 0, 245);
 				$entry_link = strip_tags($article["link"]);
-				$entry_content = $article["content"]; // escaped below
+				$entry_content = self::strip_utf8mb4($article["content"]); // escaped below
 				$entry_force_catchup = $article["force_catchup"];
 				$article_labels = $article["labels"];
 				$entry_score_modifier = (int) $article["score_modifier"];
@@ -1013,56 +1036,105 @@ class RSSUtils {
 					Debug::log("base guid [$entry_guid or $entry_guid_hashed] not found, creating...", Debug::LOG_VERBOSE);
 
 					// base post entry does not exist, create it
-					$isth = $pdo->prepare(
-						"INSERT INTO ttrss_entries
-							(title,
-							tsvector_combined,
-							guid,
-							link,
-							updated,
-							content,
-							content_hash,
-							no_orig_date,
-							date_updated,
-							date_entered,
-							comments,
-							num_comments,
-							plugin_data,
-							lang,
-							author)
-						VALUES
-							(:title,
-							to_tsvector(:ts_lang, :ts_content),
-							:guid,
-							:link,
-							:updated,
-							:content,
-							:content_hash,
-							false,
-							NOW(),
-							:date_entered,
-							:comments,
-							:num_comments,
-							:plugin_data,
-							:lang,
-							:author) RETURNING id");
+					if (Config::get(Config::DB_TYPE) == 'pgsql') {
+						$isth = $pdo->prepare(
+							"INSERT INTO ttrss_entries
+								(title,
+								tsvector_combined,
+								guid,
+								link,
+								updated,
+								content,
+								content_hash,
+								no_orig_date,
+								date_updated,
+								date_entered,
+								comments,
+								num_comments,
+								plugin_data,
+								lang,
+								author)
+							VALUES
+								(:title,
+								to_tsvector(:ts_lang, :ts_content),
+								:guid,
+								:link,
+								:updated,
+								:content,
+								:content_hash,
+								false,
+								NOW(),
+								:date_entered,
+								:comments,
+								:num_comments,
+								:plugin_data,
+								:lang,
+								:author) RETURNING id");
 
-						$isth->execute([":title" => $entry_title,
-							":ts_lang" => $feed_language,
-							":ts_content" => mb_substr(strip_tags($entry_title) . " " . \Soundasleep\Html2Text::convert($entry_content), 0, 900000),
-							":guid" => $entry_guid_hashed,
-							":link" => $entry_link,
-							":updated" => $entry_timestamp_fmt,
-							":content" => $entry_content,
-							":content_hash" => $entry_current_hash,
-							":date_entered" => $date_feed_processed,
-							":comments" => $entry_comments,
-							":num_comments" => (int)$num_comments,
-							":plugin_data" => $entry_plugin_data,
-							":lang" => $entry_language,
-							":author" => $entry_author]);
+							$isth->execute([":title" => $entry_title,
+								":ts_lang" => $feed_language,
+								":ts_content" => mb_substr(strip_tags($entry_title) . " " . \Soundasleep\Html2Text::convert($entry_content), 0, 900000),
+								":guid" => $entry_guid_hashed,
+								":link" => $entry_link,
+								":updated" => $entry_timestamp_fmt,
+								":content" => $entry_content,
+								":content_hash" => $entry_current_hash,
+								":date_entered" => $date_feed_processed,
+								":comments" => $entry_comments,
+								":num_comments" => (int)$num_comments,
+								":plugin_data" => $entry_plugin_data,
+								":lang" => $entry_language,
+								":author" => $entry_author]);
 
-						$row = $isth->fetch();
+							$row = $isth->fetch();
+					} else {
+						$isth = $pdo->prepare(
+							"INSERT INTO ttrss_entries
+								(title,
+								guid,
+								link,
+								updated,
+								content,
+								content_hash,
+								no_orig_date,
+								date_updated,
+								date_entered,
+								comments,
+								num_comments,
+								plugin_data,
+								lang,
+								author)
+							VALUES
+								(:title,
+								:guid,
+								:link,
+								:updated,
+								:content,
+								:content_hash,
+								false,
+								NOW(),
+								:date_entered,
+								:comments,
+								:num_comments,
+								:plugin_data,
+								:lang,
+								:author)");
+
+							$isth->execute([":title" => $entry_title,
+								":guid" => $entry_guid_hashed,
+								":link" => $entry_link,
+								":updated" => $entry_timestamp_fmt,
+								":content" => $entry_content,
+								":content_hash" => $entry_current_hash,
+								":date_entered" => $date_feed_processed,
+								":comments" => $entry_comments,
+								":num_comments" => (int)$num_comments,
+								":plugin_data" => $entry_plugin_data,
+								":lang" => $entry_language,
+								":author" => $entry_author]);
+
+							$row = ['id' => $pdo->lastInsertId()];
+					}
 
 						Debug::log("insert returned RID: " . $row['id'], Debug::LOG_VERBOSE);
 						$base_record_created = true;
@@ -1128,19 +1200,33 @@ class RSSUtils {
 						$last_marked = ($marked == 1) ? 'NOW()' : 'NULL';
 						$last_published = ($published == 1) ? 'NOW()' : 'NULL';
 
-						$sth = $pdo->prepare(
-							"INSERT INTO ttrss_user_entries
-								(ref_id, owner_uid, feed_id, unread, last_read, marked,
-								published, score, tag_cache, label_cache, uuid,
-								last_marked, last_published)
-							VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ".$last_marked.", ".$last_published.")
-							RETURNING int_id");
+						if (Config::get(Config::DB_TYPE) == 'pgsql') {
+							$sth = $pdo->prepare(
+								"INSERT INTO ttrss_user_entries
+									(ref_id, owner_uid, feed_id, unread, last_read, marked,
+									published, score, tag_cache, label_cache, uuid,
+									last_marked, last_published)
+								VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ".$last_marked.", ".$last_published.")
+								RETURNING int_id");
 
-						$sth->execute([$ref_id, $feed_obj->owner_uid, $feed, $unread, $last_read_qpart, $marked,
-							$published, $score]);
+							$sth->execute([$ref_id, $feed_obj->owner_uid, $feed, $unread, $last_read_qpart, $marked,
+								$published, $score]);
 
-						if ($row = $sth->fetch())
-							$entry_int_id = $row['int_id'];
+							if ($row = $sth->fetch())
+								$entry_int_id = $row['int_id'];
+						} else {
+							$sth = $pdo->prepare(
+								"INSERT INTO ttrss_user_entries
+									(ref_id, owner_uid, feed_id, unread, last_read, marked,
+									published, score, tag_cache, label_cache, uuid,
+									last_marked, last_published)
+								VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ".$last_marked.", ".$last_published.")");
+
+							$sth->execute([$ref_id, $feed_obj->owner_uid, $feed, $unread, $last_read_qpart, $marked,
+								$published, $score]);
+
+							$entry_int_id = (int) $pdo->lastInsertId();
+						}
 
 						if ($marked)
 							PluginHost::getInstance()->run_hooks(PluginHost::HOOK_ARTICLES_MARK_TOGGLED, [$ref_id]);
@@ -1153,32 +1239,58 @@ class RSSUtils {
 
 					// it's pointless to update base record we've just created
 					if (!$base_record_created) {
-						$sth = $pdo->prepare('UPDATE ttrss_entries
-							SET title = :title,
-								tsvector_combined = to_tsvector(:ts_lang, :ts_content),
-								content = :content,
-								content_hash = :content_hash,
-								updated = :updated,
-								date_updated = NOW(),
-								num_comments = :num_comments,
-								plugin_data = :plugin_data,
-								author = :author,
-								lang = :lang
-							WHERE id = :id');
+						if (Config::get(Config::DB_TYPE) == 'pgsql') {
+							$sth = $pdo->prepare('UPDATE ttrss_entries
+								SET title = :title,
+									tsvector_combined = to_tsvector(:ts_lang, :ts_content),
+									content = :content,
+									content_hash = :content_hash,
+									updated = :updated,
+									date_updated = NOW(),
+									num_comments = :num_comments,
+									plugin_data = :plugin_data,
+									author = :author,
+									lang = :lang
+								WHERE id = :id');
 
-						$sth->execute([
-							':title' => $entry_title,
-							':content' => "$entry_content",
-							':content_hash' => $entry_current_hash,
-							':updated' => $entry_timestamp_fmt,
-							':num_comments' => (int)$num_comments,
-							':plugin_data' => $entry_plugin_data,
-							':author' => "$entry_author",
-							':lang' => $entry_language,
-							':id' => $ref_id,
-							':ts_lang' => $feed_language,
-							':ts_content' => mb_substr(strip_tags($entry_title) . ' ' . \Soundasleep\Html2Text::convert($entry_content), 0, 900000),
-						]);
+							$sth->execute([
+								':title' => $entry_title,
+								':content' => "$entry_content",
+								':content_hash' => $entry_current_hash,
+								':updated' => $entry_timestamp_fmt,
+								':num_comments' => (int)$num_comments,
+								':plugin_data' => $entry_plugin_data,
+								':author' => "$entry_author",
+								':lang' => $entry_language,
+								':id' => $ref_id,
+								':ts_lang' => $feed_language,
+								':ts_content' => mb_substr(strip_tags($entry_title) . ' ' . \Soundasleep\Html2Text::convert($entry_content), 0, 900000),
+							]);
+						} else {
+							$sth = $pdo->prepare('UPDATE ttrss_entries
+								SET title = :title,
+									content = :content,
+									content_hash = :content_hash,
+									updated = :updated,
+									date_updated = NOW(),
+									num_comments = :num_comments,
+									plugin_data = :plugin_data,
+									author = :author,
+									lang = :lang
+								WHERE id = :id');
+
+							$sth->execute([
+								':title' => $entry_title,
+								':content' => "$entry_content",
+								':content_hash' => $entry_current_hash,
+								':updated' => $entry_timestamp_fmt,
+								':num_comments' => (int)$num_comments,
+								':plugin_data' => $entry_plugin_data,
+								':author' => "$entry_author",
+								':lang' => $entry_language,
+								':id' => $ref_id,
+							]);
+						}
 					}
 
 					// update aux data
@@ -1436,7 +1548,7 @@ class RSSUtils {
 	static function expire_error_log(): void {
 		Debug::log("Removing old error log entries...");
 		$pdo = Db::pdo();
-		$pdo->query("DELETE FROM ttrss_error_log WHERE created_at < NOW() - INTERVAL '1 week'");
+		$pdo->query("DELETE FROM ttrss_error_log WHERE " . Db::past_comparison_qpart('created_at', '<', 7, 'day'));
 	}
 
 	static function expire_lock_files(): void {
@@ -1644,8 +1756,8 @@ class RSSUtils {
 			$pdo->beginTransaction();
 
 			$failing_feeds_qpart = "update_interval != -1 AND last_successful_update IS NOT NULL "
-				. "AND last_successful_update < NOW() - INTERVAL '" . Config::get(Config::DAEMON_UNSUCCESSFUL_DAYS_LIMIT) . " day' "
-				. "AND last_updated > NOW() - INTERVAL '1 day'";
+				. "AND " . Db::past_comparison_qpart('last_successful_update', '<', (int)Config::get(Config::DAEMON_UNSUCCESSFUL_DAYS_LIMIT), 'day') . " "
+				. "AND " . Db::past_comparison_qpart('last_updated', '>', 1, 'day');
 
 			$sth = $pdo->prepare("SELECT id, title, owner_uid FROM ttrss_feeds WHERE $failing_feeds_qpart");
 			$sth->execute();
@@ -1722,7 +1834,7 @@ class RSSUtils {
 					$not_logged_in_users = ORM::for_table('ttrss_users')
 						->select_many('login', 'last_login')
 						->where_not_in('access_level', [UserHelper::ACCESS_LEVEL_DISABLED, UserHelper::ACCESS_LEVEL_READONLY])
-						->where_raw("last_login < NOW() - INTERVAL '$login_limit days'")
+						->where_raw(Db::past_comparison_qpart('last_login', '<', (int)$login_limit, 'day'))
 						->find_many();
 
 					if (count($not_logged_in_users) > 0) {

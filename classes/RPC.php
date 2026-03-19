@@ -242,6 +242,91 @@ class RPC extends Handler_Protected {
 		print json_encode(["wide" => $wide]);
 	}
 
+	static function updaterandomfeed_real(): void {
+		$default_interval = (int) Prefs::get_default(Prefs::DEFAULT_UPDATE_INTERVAL);
+
+		$pdo = Db::pdo();
+
+		if (Config::get(Config::DB_TYPE) == 'mysql') {
+			$update_limit_qpart = "AND ((
+					update_interval = 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND last_updated < DATE_SUB(NOW(), INTERVAL CONVERT(COALESCE(p.value, '$default_interval'), SIGNED INTEGER) MINUTE)
+				) OR (
+					update_interval > 0
+						AND last_updated < DATE_SUB(NOW(), INTERVAL update_interval MINUTE)
+				) OR (
+					update_interval >= 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND (last_updated = '1970-01-01 00:00:00' OR last_updated IS NULL)
+				))";
+		} else {
+			$update_limit_qpart = "AND ((
+					update_interval = 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND last_updated < NOW() - CAST((COALESCE(p.value, '$default_interval') || ' minutes') AS INTERVAL)
+				) OR (
+					update_interval > 0
+						AND last_updated < NOW() - CAST((update_interval || ' minutes') AS INTERVAL)
+				) OR (
+					update_interval >= 0
+						AND (p.value IS NULL OR p.value != '-1')
+						AND (last_updated = '1970-01-01 00:00:00' OR last_updated IS NULL)
+				))";
+		}
+
+		$updstart_thresh_qpart = 'AND (last_update_started IS NULL OR '
+			. Db::past_comparison_qpart('last_update_started', '<', 5, 'minute') . ')';
+
+		if (!empty($_SESSION["uid"])) {
+			$owner_check_qpart = "AND f.owner_uid = ".$pdo->quote($_SESSION["uid"]);
+		} else {
+			$owner_check_qpart = "";
+		}
+
+		$random_func = Db::sql_random_function();
+
+		$query = "SELECT f.feed_url,f.id
+			FROM
+				ttrss_feeds f, ttrss_users u LEFT JOIN ttrss_user_prefs2 p ON
+					(p.owner_uid = u.id AND profile IS NULL AND pref_name = 'DEFAULT_UPDATE_INTERVAL')
+			WHERE
+				f.owner_uid = u.id AND
+				u.access_level NOT IN (".sprintf("%d, %d", UserHelper::ACCESS_LEVEL_DISABLED, UserHelper::ACCESS_LEVEL_READONLY).")
+				$owner_check_qpart
+				$update_limit_qpart
+				$updstart_thresh_qpart
+			ORDER BY $random_func LIMIT 30";
+
+		$res = $pdo->query($query);
+
+		$num_updated = 0;
+
+		$tstart = time();
+
+		while ($line = $res->fetch()) {
+			$feed_id = $line["id"];
+
+			if (time() - $tstart < ini_get("max_execution_time") * 0.7) {
+				RSSUtils::update_rss_feed($feed_id, true);
+				++$num_updated;
+			} else {
+				break;
+			}
+		}
+
+		if ($num_updated > 0) {
+			print json_encode(array("message" => "UPDATE_COUNTERS",
+				"num_updated" => $num_updated));
+		} else {
+			print json_encode(array("message" => "NOTHING_TO_UPDATE"));
+		}
+	}
+
+	function updaterandomfeed(): void {
+		self::updaterandomfeed_real();
+	}
+
 	/**
 	 * @param array<int, int> $ids
 	 */
@@ -432,7 +517,7 @@ class RPC extends Handler_Protected {
 				FROM ttrss_error_log
 			WHERE
 				errno NOT IN (".E_USER_NOTICE.", ".E_USER_DEPRECATED.") AND
-				created_at > NOW() - INTERVAL '1 hour' AND
+				" . Db::past_comparison_qpart('created_at', '>', 1, 'hour') . " AND
 				errstr NOT LIKE '%Returning bool from comparison function is deprecated%' AND
 				errstr NOT LIKE '%imagecreatefromstring(): Data is not in a recognized format%'");
 			$sth->execute();

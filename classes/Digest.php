@@ -10,7 +10,7 @@ class Digest
 		$pdo = Db::pdo();
 
 		$res = $pdo->query("SELECT id, login, email FROM ttrss_users
-				WHERE email != '' AND (last_digest_sent IS NULL OR last_digest_sent < NOW() - INTERVAL '1 day')");
+				WHERE email != '' AND (last_digest_sent IS NULL OR " . Db::past_comparison_qpart('last_digest_sent', '<', 1, 'day') . ")");
 
 		while ($line = $res->fetch()) {
 
