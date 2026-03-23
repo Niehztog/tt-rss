@@ -1339,7 +1339,7 @@ class Feeds extends Handler_Protected {
 		return ORM::for_table('ttrss_user_entries')
 			->table_alias('ue')
 			->join('ttrss_user_labels2', ['ul2.article_id', '=', 'ue.ref_id'], 'ul2')
-			->where(['ue.unread' => 'true', 'ue.owner_uid' => $owner_uid, 'ul2.label_id' => $label_id])
+			->where(['ue.unread' => 1, 'ue.owner_uid' => $owner_uid, 'ul2.label_id' => $label_id])
 			->count();
 	}
 

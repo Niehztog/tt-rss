@@ -18,3 +18,4 @@ Thumbs.db
 /.phpstan-tmp
 /.rector-tmp
 /.tools/
+/.idea/
